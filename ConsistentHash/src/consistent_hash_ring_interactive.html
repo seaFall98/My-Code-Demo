@@ -1,0 +1,295 @@
+
+<style>
+body{margin:0}
+.wrap{padding:1rem 0;font-family:var(--font-sans)}
+.top-row{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.canvas-col{flex:0 0 300px}
+.info-col{flex:1;min-width:200px}
+.legend{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.leg-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--color-text-secondary)}
+.leg-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.info-card{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px 14px;margin-bottom:10px;font-size:13px;color:var(--color-text-secondary);border:0.5px solid var(--color-border-tertiary);line-height:1.7}
+.info-card b{color:var(--color-text-primary);font-weight:500}
+.req-label{font-size:12px;color:var(--color-text-secondary);margin-bottom:6px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.btn{font-size:12px;padding:4px 12px;border-radius:var(--border-radius-md);background:transparent;border:0.5px solid var(--color-border-secondary);cursor:pointer;color:var(--color-text-primary);transition:background .15s}
+.btn:hover{background:var(--color-background-secondary)}
+.btn.active{background:var(--color-background-info);color:var(--color-text-info);border-color:var(--color-border-info)}
+.result-box{font-size:13px;padding:8px 12px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-tertiary);min-height:36px;color:var(--color-text-primary);margin-bottom:10px;background:var(--color-background-primary)}
+.node-table{width:100%;font-size:12px;border-collapse:collapse}
+.node-table th{color:var(--color-text-secondary);font-weight:500;text-align:left;padding:4px 8px;border-bottom:0.5px solid var(--color-border-tertiary)}
+.node-table td{padding:4px 8px;color:var(--color-text-primary)}
+.seg-bar{height:8px;border-radius:4px;display:inline-block}
+</style>
+<div class="wrap">
+<h2 style="position:absolute;width:1px;height:1px;overflow:hidden">Consistent hash ring with three providers and configurable virtual node count, showing request routing</h2>
+
+<div class="controls" id="vn-ctrl">
+  <span style="font-size:12px;color:var(--color-text-secondary);line-height:28px">虚拟节点数：</span>
+  <button class="btn" onclick="setVN(1)">1（无虚拟节点）</button>
+  <button class="btn active" onclick="setVN(3)">3</button>
+  <button class="btn" onclick="setVN(10)">10</button>
+  <button class="btn" onclick="setVN(30)">30</button>
+</div>
+
+<div class="top-row">
+  <div class="canvas-col">
+    <canvas id="ring" width="300" height="300"></canvas>
+  </div>
+  <div class="info-col">
+    <div class="legend">
+      <div class="leg-row"><div class="leg-dot" style="background:#534AB7"></div>Provider A（主节点）</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#1D9E75"></div>Provider B（主节点）</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#D85A30"></div>Provider C（主节点）</div>
+      <div class="leg-row"><div class="leg-dot" style="border:1.5px dashed #534AB7;background:transparent;width:10px;height:10px"></div>虚拟节点</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#E24B4A"></div>请求落点</div>
+    </div>
+    <div class="req-label">点击环上任意位置，或输入请求参数：</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <input id="req-input" type="text" placeholder="如 userId=10086" style="flex:1;font-size:12px" oninput="routeByInput(this.value)">
+      <button class="btn" onclick="randomReq()">随机</button>
+    </div>
+    <div class="result-box" id="result-box">← 点击哈希环或输入参数，查看路由结果</div>
+    <div class="info-card" id="stats-card">
+      <b>各节点承载比例（当前虚拟节点数）</b><br>
+      <div id="seg-detail" style="margin-top:6px"></div>
+    </div>
+    <div class="info-card" id="failover-card" style="display:none">
+      <b>节点故障迁移模拟</b><br><span id="failover-text"></span>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+  <button class="btn" onclick="simulateFailover()">模拟 Provider A 下线</button>
+  <button class="btn" onclick="resetFailover()">恢复 Provider A</button>
+</div>
+</div>
+
+<script>
+const COLORS = { A:'#534AB7', B:'#1D9E75', C:'#D85A30' };
+const NAMES = ['A','B','C'];
+let vnCount = 3;
+let ring = [];
+let failed = new Set();
+let highlightHash = null;
+
+function simpleHash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return h;
+}
+
+function buildRing(vn) {
+  ring = [];
+  NAMES.forEach(name => {
+    for (let v = 0; v < vn; v++) {
+      const key = name + '-vn' + v;
+      const hash = simpleHash(key) % 1000;
+      ring.push({ hash, name, isVirtual: v > 0 });
+    }
+  });
+  ring.sort((a, b) => a.hash - b.hash);
+}
+
+function lookup(hash, ignoreFailed) {
+  const active = ring.filter(n => !ignoreFailed || !failed.has(n.name));
+  if (active.length === 0) return null;
+  for (let i = 0; i < active.length; i++) {
+    if (active[i].hash >= hash) return active[i].name;
+  }
+  return active[0].name;
+}
+
+function computeSegments(ignoreFailed) {
+  const counts = { A:0, B:0, C:0 };
+  const active = ring.filter(n => !ignoreFailed || !failed.has(n.name));
+  if (active.length === 0) return counts;
+  for (let h = 0; h < 1000; h++) {
+    const name = lookup(h, ignoreFailed);
+    if (name) counts[name]++;
+  }
+  return counts;
+}
+
+function drawRing(clickHash) {
+  const canvas = document.getElementById('ring');
+  const ctx = canvas.getContext('2d');
+  const W = 300, H = 300, cx = 150, cy = 150, R = 120, r2 = 6;
+  const isDark = matchMedia('(prefers-color-scheme:dark)').matches;
+  ctx.clearRect(0, 0, W, H);
+
+  // Draw arc segments
+  ring.forEach((node, i) => {
+    const next = ring[(i + 1) % ring.length];
+    const a1 = (node.hash / 1000) * 2 * Math.PI - Math.PI / 2;
+    const a2 = (next.hash / 1000) * 2 * Math.PI - Math.PI / 2;
+    const isFailed = failed.has(node.name);
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, a1, a2);
+    ctx.strokeStyle = isFailed ? (isDark ? '#444' : '#ddd') : COLORS[node.name] + '55';
+    ctx.lineWidth = 14;
+    ctx.stroke();
+  });
+
+  // Draw thin ring border
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Draw virtual/real nodes
+  ring.forEach(node => {
+    const angle = (node.hash / 1000) * 2 * Math.PI - Math.PI / 2;
+    const x = cx + R * Math.cos(angle);
+    const y = cy + R * Math.sin(angle);
+    const isFailed = failed.has(node.name);
+    ctx.beginPath();
+    if (!node.isVirtual) {
+      ctx.arc(x, y, 7, 0, 2 * Math.PI);
+      ctx.fillStyle = isFailed ? (isDark ? '#555' : '#bbb') : COLORS[node.name];
+      ctx.fill();
+    } else {
+      ctx.arc(x, y, 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = isFailed ? (isDark ? '#555' : '#bbb') : COLORS[node.name];
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = isDark ? '#1a1a1a' : '#fff';
+      ctx.fill();
+    }
+  });
+
+  // Highlight request point
+  if (clickHash !== null) {
+    const angle = (clickHash / 1000) * 2 * Math.PI - Math.PI / 2;
+    const x = cx + R * Math.cos(angle);
+    const y = cy + R * Math.sin(angle);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#E24B4A';
+    ctx.fill();
+    // Arrow line to center
+    const target = lookup(clickHash, true);
+    if (target) {
+      const tNodes = ring.filter(n => n.name === target && !failed.has(n.name));
+      let nearest = null;
+      let minDist = Infinity;
+      tNodes.forEach(n => {
+        let dist = n.hash - clickHash;
+        if (dist < 0) dist += 1000;
+        if (dist < minDist) { minDist = dist; nearest = n; }
+      });
+      if (nearest) {
+        const ta = (nearest.hash / 1000) * 2 * Math.PI - Math.PI / 2;
+        const tx = cx + R * Math.cos(ta), ty = cy + R * Math.sin(ta);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = '#E24B4A';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  // Center label
+  ctx.font = '500 12px sans-serif';
+  ctx.fillStyle = isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.2)';
+  ctx.textAlign = 'center';
+  ctx.fillText('Hash Ring', cx, cy - 4);
+  ctx.font = '11px sans-serif';
+  ctx.fillText('[0, 1000)', cx, cy + 12);
+}
+
+function updateStats() {
+  const counts = computeSegments(failed.size > 0);
+  const total = 1000;
+  let html = '';
+  NAMES.forEach(n => {
+    const pct = ((counts[n] || 0) / total * 100).toFixed(1);
+    html += `<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+      <span style="width:60px;color:var(--color-text-secondary)">${n}：</span>
+      <div class="seg-bar" style="width:${Math.round(pct*1.2)}px;background:${COLORS[n]}88"></div>
+      <span style="font-size:12px">${pct}%</span>
+    </div>`;
+  });
+  document.getElementById('seg-detail').innerHTML = html;
+}
+
+function routeHash(hash) {
+  highlightHash = hash;
+  const name = lookup(hash, true);
+  const isFailed = name && failed.has(name);
+  const resultBox = document.getElementById('result-box');
+  if (!name) { resultBox.textContent = '所有节点已下线'; return; }
+  const node = ring.find(n => n.name === name && !failed.has(n.name) && n.hash >= hash)
+    || ring.find(n => n.name === name && !failed.has(n.name));
+  resultBox.innerHTML = `Hash <b>${hash}</b> → 顺时针找到虚拟节点 <b>${node?.name}-vn${ring.filter(n=>n.name===name).indexOf(node)}</b> → 路由到 <b style="color:${COLORS[name]}">Provider ${name}</b>`;
+  drawRing(hash);
+}
+
+function routeByInput(val) {
+  if (!val) { highlightHash = null; drawRing(null); return; }
+  routeHash(simpleHash(val) % 1000);
+}
+
+function randomReq() {
+  const keys = ['userId=10086','orderId=88888','itemId=12345','uid=99999','key=abc'];
+  const k = keys[Math.floor(Math.random() * keys.length)];
+  document.getElementById('req-input').value = k;
+  routeByInput(k);
+}
+
+function simulateFailover() {
+  failed.add('A');
+  const card = document.getElementById('failover-card');
+  card.style.display = '';
+  const before = computeSegments(false);
+  const after = computeSegments(true);
+  const moved = after.B + after.C - before.B - before.C;
+  document.getElementById('failover-text').innerHTML =
+    `Provider A 下线，原本由 A 承载的 <b>${before.A}</b>/1000 份流量被重新分配给相邻节点（仅 A 的虚拟节点区间迁移），其他节点 B/C 之间的分配<b>不受影响</b>。`;
+  updateStats();
+  drawRing(highlightHash);
+  if (highlightHash !== null) routeHash(highlightHash);
+}
+
+function resetFailover() {
+  failed.clear();
+  document.getElementById('failover-card').style.display = 'none';
+  updateStats();
+  drawRing(highlightHash);
+}
+
+function setVN(n) {
+  vnCount = n;
+  document.querySelectorAll('#vn-ctrl .btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.startsWith(String(n)));
+  });
+  buildRing(n);
+  updateStats();
+  drawRing(highlightHash);
+  if (document.getElementById('req-input').value) routeByInput(document.getElementById('req-input').value);
+}
+
+// Click on canvas
+document.getElementById('ring').addEventListener('click', function(e) {
+  const rect = this.getBoundingClientRect();
+  const x = e.clientX - rect.left - 150;
+  const y = e.clientY - rect.top - 150;
+  const angle = Math.atan2(y, x) + Math.PI / 2;
+  let norm = angle / (2 * Math.PI);
+  if (norm < 0) norm += 1;
+  const hash = Math.round(norm * 1000) % 1000;
+  document.getElementById('req-input').value = 'hash=' + hash;
+  routeHash(hash);
+});
+
+setVN(3);
+</script>

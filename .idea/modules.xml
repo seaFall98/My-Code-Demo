@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/ConsistentHash/ConsistentHash.iml" filepath="$PROJECT_DIR$/ConsistentHash/ConsistentHash.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/My-Code-Demo.iml" filepath="$PROJECT_DIR$/.idea/My-Code-Demo.iml" />
       <module fileurl="file://$PROJECT_DIR$/SmoothWeightedRoundRobin/SmoothWeightedRoundRobin.iml" filepath="$PROJECT_DIR$/SmoothWeightedRoundRobin/SmoothWeightedRoundRobin.iml" />
     </modules>
